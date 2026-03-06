@@ -1,8 +1,9 @@
 import os
+import ssl
 import smtplib
 import logging
+import certifi
 import itchat
-import itchat.content
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -32,6 +33,48 @@ class NotificationManager:
 
         return success
 
+    def _create_ssl_context(self):
+        """创建 SSL 上下文，优先使用 certifi 证书库"""
+        verify_cert = EMAIL_CONFIG['smtp_verify_cert']
+        if verify_cert:
+            context = ssl.create_default_context(cafile=certifi.where())
+        else:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        return context
+
+    def _create_smtp_client(self):
+        """根据配置创建 SMTP 客户端"""
+        host = EMAIL_CONFIG['smtp_server']
+        port = EMAIL_CONFIG['smtp_port']
+        timeout = EMAIL_CONFIG['smtp_timeout']
+        use_ssl = EMAIL_CONFIG['smtp_use_ssl']
+        use_starttls = EMAIL_CONFIG['smtp_use_starttls']
+        verify_cert = EMAIL_CONFIG['smtp_verify_cert']
+        ssl_context = self._create_ssl_context()
+
+        logging.info(
+            f"Connecting to SMTP server: host={host}, port={port}, ssl={use_ssl}, starttls={use_starttls}, verify_cert={verify_cert}"
+        )
+
+        if use_ssl:
+            server = smtplib.SMTP_SSL(
+                host,
+                port,
+                timeout=timeout,
+                context=ssl_context
+            )
+            server.ehlo()
+            return server
+
+        server = smtplib.SMTP(host, port, timeout=timeout)
+        server.ehlo()
+        if use_starttls:
+            server.starttls(context=ssl_context)
+            server.ehlo()
+        return server
+
     def _send_email(self, subject, body, attachments=None):
         """发送邮件通知"""
         try:
@@ -49,139 +92,100 @@ class NotificationManager:
                     part['Content-Disposition'] = f'attachment; filename="{os.path.basename(filepath)}"'
                     msg.attach(part)
 
-            with smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port']) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                logging.info("Attempting to login to Gmail...")
+            with self._create_smtp_client() as server:
+                logging.info(f"Attempting SMTP login as {EMAIL_CONFIG['sender_email']}")
                 server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
-                logging.info("Login successful, sending email...")
+                logging.info("SMTP login successful, sending email...")
                 server.send_message(msg)
-                
+
             logging.info(f"Email sent successfully: {subject}")
             return True
-        except Exception as e:
-            logging.error(f"Failed to send email: {str(e)}")
-            logging.error(f"Email configuration used: server={EMAIL_CONFIG['smtp_server']}, port={EMAIL_CONFIG['smtp_port']}")
+        except smtplib.SMTPAuthenticationError as e:
+            smtp_error = e.smtp_error.decode('utf-8', errors='ignore') if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+            logging.error(f"SMTP authentication failed: code={e.smtp_code}, message={smtp_error}")
+            logging.exception("Failed to send email")
             return False
+        except smtplib.SMTPResponseException as e:
+            smtp_error = e.smtp_error.decode('utf-8', errors='ignore') if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+            logging.error(f"SMTP server rejected request: code={e.smtp_code}, message={smtp_error}")
+            logging.exception("Failed to send email")
+            return False
+        except Exception as e:
+            logging.error(f"Failed to send email: {type(e).__name__}: {e}")
+            logging.error(
+                f"Email configuration used: server={EMAIL_CONFIG['smtp_server']}, port={EMAIL_CONFIG['smtp_port']}, "
+                f"ssl={EMAIL_CONFIG['smtp_use_ssl']}, starttls={EMAIL_CONFIG['smtp_use_starttls']}, verify_cert={EMAIL_CONFIG['smtp_verify_cert']}, "
+                f"sender={EMAIL_CONFIG['sender_email']}, recipient={EMAIL_CONFIG['recipient_email']}"
+            )
+            logging.exception("Email send stack trace")
+            return False
+
+    def _get_report_columns(self, report_data):
+        """兼容中英文报表字段名"""
+        column_candidates = {
+            'keyword': ['关键词', 'keyword'],
+            'related_query': ['相关查询词', 'related_keywords'],
+            'value': ['数值', 'value'],
+            'type': ['类型', 'type'],
+        }
+
+        columns = {}
+        for logical_name, candidates in column_candidates.items():
+            for candidate in candidates:
+                if candidate in report_data.columns:
+                    columns[logical_name] = candidate
+                    break
+        return columns if len(columns) == len(column_candidates) else None
+
+    def _normalize_report_type(self, value):
+        mapping = {
+            'rising': '上升',
+            'top': '热门',
+            '上升': '上升',
+            '热门': '热门',
+        }
+        return mapping.get(str(value).strip().lower(), str(value).strip())
 
     def _format_wechat_message(self, subject, body, report_data=None):
         """格式化微信消息内容"""
-        # 移除HTML标签
-        text = self._html_to_text(body)
-        
-        # 提取和格式化关键信息
-        lines = text.split('\n')
-        formatted_lines = []
-        
-        # 添加标题
-        formatted_lines.append(f"📊 {subject}")
-        formatted_lines.append("=" * 30)
-        
-        # 处理正文
-        current_section = ""
-        trend_buffer = []  # 用于临时存储趋势数据
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            # 检测是否是新的部分
-            if line.endswith(':'):
-                # 如果有未处理的趋势数据，先处理它
-                if trend_buffer:
-                    formatted_lines.extend(self._format_trend_data(trend_buffer))
-                    trend_buffer = []
-                
-                current_section = line
-                formatted_lines.append(f"\n📌 {line}")
-            elif line.startswith('Time Range:'):
-                formatted_lines.append(f"🕒 {line}")
-            elif line.startswith('Region:'):
-                formatted_lines.append(f"🌍 {line}")
-            elif line.startswith('Total keywords'):
-                formatted_lines.append(f"📝 {line}")
-            elif line.startswith('Successful'):
-                formatted_lines.append(f"✅ {line}")
-            elif line.startswith('Failed'):
-                formatted_lines.append(f"❌ {line}")
-            elif 'Growth:' in line or ('AI:' in line and 'Growth' in line):
-                # 收集趋势数据进缓冲区
-                trend_buffer.append(line)
-            else:
-                # 如果有未处理的趋势数据，先处理它
-                if trend_buffer:
-                    formatted_lines.extend(self._format_trend_data(trend_buffer))
-                    trend_buffer = []
-                formatted_lines.append(line)
-        
-        # 处理最后可能剩余的趋势数据
-        if trend_buffer:
-            formatted_lines.extend(self._format_trend_data(trend_buffer))
-        
-        if report_data is not None and isinstance(report_data, pd.DataFrame):
-            formatted_lines.append("\n📌 详细报告:")
-            
-            for keyword in report_data['keyword'].unique():
-                keyword_data = report_data[report_data['keyword'] == keyword]
-                formatted_lines.append(f"\n🔍 {keyword}")
-                
-                for trend_type in ['rising', 'top']:
-                    type_data = keyword_data[keyword_data['type'] == trend_type]
-                    if not type_data.empty:
-                        formatted_lines.append(f"  {'↗️ 上升趋势' if trend_type == 'rising' else '⭐ 热门趋势'}:")
-                        for _, row in type_data.iterrows():
-                            formatted_lines.append(f"    • {row['related_keywords']} ({row['value']})")
-        
-        return '\n'.join(formatted_lines)
+        lines = [
+            line.strip()
+            for line in self._html_to_text(body).splitlines()
+            if line.strip()
+        ]
 
-    def _format_trend_data(self, trend_lines):
-        """格式化趋势数据
-        
-        Args:
-            trend_lines: 包含趋势数据的行列表
-        
-        Returns:
-            格式化后的行列表
-        """
-        formatted_lines = []
-        current_keyword = None
-        current_data = {}
-        
-        for line in trend_lines:
-            try:
-                # 处理包含完整信息的单行
-                if ':' in line and 'Growth:' in line:
-                    parts = line.split(':', 1)
-                    keyword = parts[0].strip()
-                    rest = parts[1]
-                    
-                    # 尝试分离相关查询和增长率
-                    if '(Growth:' in rest:
-                        query, growth = rest.split('(Growth:', 1)
-                        growth = growth.strip('() ')
-                    else:
-                        # 如果格式不标准，尝试其他分割方式
-                        rest_parts = rest.split('Growth:', 1)
-                        if len(rest_parts) == 2:
-                            query = rest_parts[0]
-                            growth = rest_parts[1].strip('() ')
-                        else:
-                            query = rest
-                            growth = 'N/A'
-                    
-                    formatted_lines.append(f"\n↗️ 关键词: {keyword}")
-                    formatted_lines.append(f"   相关查询: {query.strip()}")
-                    formatted_lines.append(f"   增长幅度: {growth}")
-                else:
-                    # 处理其他格式的行
-                    formatted_lines.append(f"   {line}")
-            except Exception as e:
-                logging.warning(f"Error formatting trend line '{line}': {str(e)}")
-                formatted_lines.append(f"   {line}")
-        
-        return formatted_lines
+        formatted_lines = [f"📊 {subject}", "=" * 30]
+        for line in lines:
+            if line.endswith(('：', ':')):
+                line = line.rstrip(':：') + '：'
+                formatted_lines.append(f"\n📌 {line}")
+            else:
+                formatted_lines.append(line)
+
+        if report_data is not None and isinstance(report_data, pd.DataFrame):
+            columns = self._get_report_columns(report_data)
+            if columns:
+                formatted_lines.append("\n📋 详细数据：")
+                report_data = report_data.copy()
+                report_data[columns['type']] = report_data[columns['type']].map(self._normalize_report_type)
+
+                for keyword in report_data[columns['keyword']].dropna().unique():
+                    keyword_data = report_data[report_data[columns['keyword']] == keyword]
+                    formatted_lines.append(f"\n🔍 {keyword}")
+
+                    for trend_type in ['上升', '热门']:
+                        type_data = keyword_data[keyword_data[columns['type']] == trend_type]
+                        if type_data.empty:
+                            continue
+
+                        label = '↗️ 上升趋势' if trend_type == '上升' else '⭐ 热门趋势'
+                        formatted_lines.append(label)
+                        for _, row in type_data.iterrows():
+                            formatted_lines.append(
+                                f"• {row[columns['related_query']]}（{row[columns['value']]}）"
+                            )
+
+        return '\n'.join(formatted_lines)
 
     def _send_wechat_message_in_chunks(self, message, receiver_id, chunk_size=2000):
         """分段发送微信消息"""
@@ -277,7 +281,12 @@ class NotificationManager:
         return False
 
     def _html_to_text(self, html):
-        """简单的HTML到纯文本转换"""
+        """简单的 HTML 到纯文本转换"""
         import re
-        text = re.sub('<[^<]+?>', '', html)
-        return text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
+
+        text = re.sub(r'<\s*br\s*/?>', '\n', html, flags=re.IGNORECASE)
+        text = re.sub(r'</(p|div|li|tr|h[1-6]|ul|ol|table)>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^<]+?>', '', text)
+        text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
+        text = re.sub(r'\n{2,}', '\n', text)
+        return text.strip()

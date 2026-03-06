@@ -10,10 +10,21 @@ NOTIFICATION_CONFIG = {
     'wechat_receiver': os.getenv('TRENDS_WECHAT_RECEIVER', ''),  # 微信接收者的备注名或微信号
 }
 
+def get_bool_env(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
 # Email Configuration
+smtp_port = int(os.getenv('TRENDS_SMTP_PORT', '587'))
 EMAIL_CONFIG = {
     'smtp_server': os.getenv('TRENDS_SMTP_SERVER', 'smtp.gmail.com'),
-    'smtp_port': int(os.getenv('TRENDS_SMTP_PORT', '587')),
+    'smtp_port': smtp_port,
+    'smtp_use_ssl': get_bool_env('TRENDS_SMTP_USE_SSL', smtp_port == 465),
+    'smtp_use_starttls': get_bool_env('TRENDS_SMTP_USE_STARTTLS', smtp_port != 465),
+    'smtp_timeout': int(os.getenv('TRENDS_SMTP_TIMEOUT', '30')),
+    'smtp_verify_cert': get_bool_env('TRENDS_SMTP_VERIFY_CERT', True),
     'sender_email': os.getenv('TRENDS_SENDER_EMAIL', ''),
     'sender_password': os.getenv('TRENDS_SENDER_PASSWORD', ''),
     'recipient_email': os.getenv('TRENDS_RECIPIENT_EMAIL', '')

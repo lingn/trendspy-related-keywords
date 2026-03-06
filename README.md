@@ -32,6 +32,15 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
+如果安装时报错 `Missing dependencies for SOCKS support`，通常是当前终端设置了
+`ALL_PROXY=socks5://...` 或其他 SOCKS 代理环境变量，而 `pip` 当前环境没有启用
+SOCKS 支持。可以临时去掉代理变量后再安装：
+
+```bash
+env -u ALL_PROXY -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u http_proxy -u https_proxy \
+  pip install -r requirements.txt
+```
+
 ## 配置说明
 
 1. 复制环境变量示例文件：
@@ -47,6 +56,12 @@ TRENDS_SMTP_PORT=587
 TRENDS_SENDER_EMAIL=your-email@gmail.com
 TRENDS_SENDER_PASSWORD=your-app-password
 TRENDS_RECIPIENT_EMAIL=recipient@example.com
+
+# SMTP协议选项（163邮箱常用）
+TRENDS_SMTP_USE_SSL=false
+TRENDS_SMTP_USE_STARTTLS=true
+TRENDS_SMTP_TIMEOUT=30
+TRENDS_SMTP_VERIFY_CERT=true
 
 # 微信配置
 TRENDS_WECHAT_RECEIVER=filehelper  # 接收者的微信号或备注名
@@ -127,6 +142,9 @@ python wechat_utils.py
 - 检查 SMTP 配置是否正确
 - 确认应用密码是否正确
 - 检查网络连接状态
+- 163 邮箱通常使用 `smtp.163.com`，若端口为 `465`，请设置 `TRENDS_SMTP_USE_SSL=true` 和 `TRENDS_SMTP_USE_STARTTLS=false`
+- 若端口为 `587`，通常使用 `TRENDS_SMTP_USE_SSL=false` 和 `TRENDS_SMTP_USE_STARTTLS=true`
+- 如果日志出现 SSL 证书校验失败，可先保持 `TRENDS_SMTP_VERIFY_CERT=true`；当前代码会优先使用 `certifi` 证书库
 
 2. 微信登录问题
 - 确保微信版本兼容
@@ -137,6 +155,11 @@ python wechat_utils.py
 - 检查网络连接
 - 确认关键词格式正确
 - 查看日志文件获取详细错误信息
+
+4. 安装依赖时报 `Missing dependencies for SOCKS support`
+- 先执行 `env | grep -i proxy` 检查是否设置了 SOCKS 代理
+- 如果有 `ALL_PROXY=socks5://...`，请临时取消代理后重新执行安装命令
+- 本项目依赖本身没有强制要求 SOCKS，报错通常来自本地 `pip` 的代理配置
 
 ## 许可证
 

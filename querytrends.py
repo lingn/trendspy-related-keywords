@@ -12,6 +12,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def has_env_proxy():
+    """检查当前环境是否配置了代理变量"""
+    proxy_keys = (
+        'ALL_PROXY', 'all_proxy',
+        'HTTP_PROXY', 'http_proxy',
+        'HTTPS_PROXY', 'https_proxy'
+    )
+    return any(os.getenv(key) for key in proxy_keys)
+
+def has_socks_support():
+    """检查当前 Python 环境是否具备 SOCKS 支持"""
+    try:
+        import socks  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
 def get_proxy():
     """获取代理，优先使用隧道代理，其次动态代理"""
     # 隧道代理
@@ -32,8 +49,13 @@ def get_proxy():
     password = os.getenv('KDL_PASSWORD')
     if not api_url or not username or not password:
         return None
+
     try:
-        proxy_ip = requests.get(api_url, timeout=10).text.strip()
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(api_url, timeout=10)
+        response.raise_for_status()
+        proxy_ip = response.text.strip()
         proxies = {
             "http": f"http://{username}:{password}@{proxy_ip}/",
             "https": f"http://{username}:{password}@{proxy_ip}/"
@@ -44,20 +66,39 @@ def get_proxy():
         print(f"获取代理失败: {e}")
         return None
 
+def create_trends_client(proxies=None):
+    """创建 Trends 客户端，支持项目代理和环境代理"""
+    tr = Trends(hl='zh-CN', proxy=proxies, request_delay=3.0) if proxies else Trends(hl='zh-CN')
+
+    if proxies:
+        tr.session.trust_env = False
+        tr.session.proxies.clear()
+        tr.session.proxies.update(proxies)
+        tr.session.headers.update({'Connection': 'close'})
+        from requests.adapters import HTTPAdapter
+        tr.session.mount('http://', HTTPAdapter(pool_connections=1, pool_maxsize=1))
+        tr.session.mount('https://', HTTPAdapter(pool_connections=1, pool_maxsize=1))
+        print(f"[代理] {tr.session.proxies}")
+    elif has_env_proxy():
+        if not has_socks_support():
+            raise RuntimeError(
+                "检测到环境变量中的 SOCKS 代理，但当前 Python 环境缺少 SOCKS 支持。"
+                "请先执行 `env -u ALL_PROXY -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u http_proxy -u https_proxy pip install PySocks`，"
+                "或使用 requirements.txt 安装完依赖后重试"
+            )
+        print("检测到系统代理环境变量，当前将通过环境代理访问 Google Trends")
+    else:
+        tr.session.trust_env = False
+
+    return tr
+
 def get_related_queries(keyword, geo='', timeframe='today 12-m', max_retries=5):
     """
     获取关键词的相关查询数据，带请求限制
     """
     for attempt in range(1, max_retries + 1):
         proxies = get_proxy()
-        tr = Trends(hl='zh-CN', proxy=proxies, request_delay=3.0) if proxies else Trends(hl='zh-CN')
-        # 禁用keep-alive和连接池，确保每次请求建立新连接（隧道代理每个新连接换IP）
-        if proxies:
-            tr.session.headers.update({'Connection': 'close'})
-            from requests.adapters import HTTPAdapter
-            tr.session.mount('http://', HTTPAdapter(pool_connections=0, pool_maxsize=0))
-            tr.session.mount('https://', HTTPAdapter(pool_connections=0, pool_maxsize=0))
-            print(f"[代理] {tr.session.proxies}")
+        tr = create_trends_client(proxies)
         # 清除cookie，避免Google通过cookie追踪
         tr.session.cookies.clear()
 
@@ -100,7 +141,10 @@ def get_related_queries(keyword, geo='', timeframe='today 12-m', max_retries=5):
 
             if attempt < max_retries:
                 wait_time = random.uniform(5, 15)
-                print(f"换代理重试，等待 {wait_time:.1f} 秒...")
+                if proxies:
+                    print(f"换代理重试，等待 {wait_time:.1f} 秒...")
+                else:
+                    print(f"等待 {wait_time:.1f} 秒后重试...")
                 time.sleep(wait_time)
                 continue
             else:
