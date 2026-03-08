@@ -6,11 +6,14 @@ import random
 from datetime import datetime
 import requests
 from urllib.parse import quote
+from urllib.request import getproxies
 import re
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+DEFAULT_REQUEST_TIMEOUT = int(os.getenv('TRENDS_REQUEST_TIMEOUT', '15'))
 
 def has_env_proxy():
     """检查当前环境是否配置了代理变量"""
@@ -20,6 +23,11 @@ def has_env_proxy():
         'HTTPS_PROXY', 'https_proxy'
     )
     return any(os.getenv(key) for key in proxy_keys)
+
+def get_system_proxies():
+    """读取系统代理配置（包括 macOS 系统代理）"""
+    proxies = getproxies()
+    return {key: value for key, value in proxies.items() if key in ('http', 'https') and value}
 
 def has_socks_support():
     """检查当前 Python 环境是否具备 SOCKS 支持"""
@@ -67,18 +75,37 @@ def get_proxy():
         return None
 
 def create_trends_client(proxies=None):
-    """创建 Trends 客户端，支持项目代理和环境代理"""
-    tr = Trends(hl='zh-CN', proxy=proxies, request_delay=3.0) if proxies else Trends(hl='zh-CN')
+    """创建 Trends 客户端，支持项目代理、环境代理和系统代理"""
+    system_proxies = get_system_proxies() if not proxies else None
+    effective_proxies = proxies or system_proxies
+    tr = Trends(hl='zh-CN', proxy=effective_proxies, request_delay=3.0) if effective_proxies else Trends(hl='zh-CN')
 
-    if proxies:
+    original_request = tr.session.request
+    tr._last_request_error = None
+
+    def request_with_timeout(method, url, **kwargs):
+        kwargs.setdefault('timeout', DEFAULT_REQUEST_TIMEOUT)
+        try:
+            tr._last_request_error = None
+            return original_request(method, url, **kwargs)
+        except Exception as exc:
+            tr._last_request_error = exc
+            raise
+
+    tr.session.request = request_with_timeout
+
+    if effective_proxies:
         tr.session.trust_env = False
         tr.session.proxies.clear()
-        tr.session.proxies.update(proxies)
+        tr.session.proxies.update(effective_proxies)
         tr.session.headers.update({'Connection': 'close'})
         from requests.adapters import HTTPAdapter
         tr.session.mount('http://', HTTPAdapter(pool_connections=1, pool_maxsize=1))
         tr.session.mount('https://', HTTPAdapter(pool_connections=1, pool_maxsize=1))
-        print(f"[代理] {tr.session.proxies}")
+        if proxies:
+            print(f"检测到项目代理配置，当前通过项目代理访问 Google Trends: {tr.session.proxies}")
+        else:
+            print(f"检测到系统代理配置，当前通过系统代理访问 Google Trends: {tr.session.proxies}")
     elif has_env_proxy():
         if not has_socks_support():
             raise RuntimeError(
@@ -86,7 +113,7 @@ def create_trends_client(proxies=None):
                 "请先执行 `env -u ALL_PROXY -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u http_proxy -u https_proxy pip install PySocks`，"
                 "或使用 requirements.txt 安装完依赖后重试"
             )
-        print("检测到系统代理环境变量，当前将通过环境代理访问 Google Trends")
+        print("检测到环境代理变量，当前将通过环境代理访问 Google Trends")
     else:
         tr.session.trust_env = False
 
@@ -126,6 +153,7 @@ def get_related_queries(keyword, geo='', timeframe='today 12-m', max_retries=5):
             delay = random.uniform(1, 3)
             time.sleep(delay)
 
+            print(f"开始请求 Google Trends（超时 {DEFAULT_REQUEST_TIMEOUT}s）...")
             related_data = tr.related_queries(
                 keyword,
                 headers=headers,
@@ -136,7 +164,11 @@ def get_related_queries(keyword, geo='', timeframe='today 12-m', max_retries=5):
             return related_data
 
         except Exception as e:
-            error_msg = str(e)
+            actual_error = getattr(tr, '_last_request_error', None)
+            if isinstance(e, AttributeError) and 'raise_for_status' in str(e) and actual_error is not None:
+                error_msg = f"{type(actual_error).__name__}: {actual_error}"
+            else:
+                error_msg = f"{type(e).__name__}: {e}"
             print(f"[{keyword}] 第{attempt}/{max_retries}次尝试失败: {error_msg}")
 
             if attempt < max_retries:
