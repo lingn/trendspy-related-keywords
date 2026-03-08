@@ -138,6 +138,7 @@ SCHEDULE_CONFIG = {
 # Monitoring Configuration
 MONITOR_CONFIG = {
     'rising_threshold': 500,  # 高增长趋势阈值
+    'alert_batch_size': int(os.getenv('TRENDS_ALERT_BATCH_SIZE', '100')),  # 高增长提醒每封邮件包含的最大条数
 }
 
 # Logging Configuration

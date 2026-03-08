@@ -272,7 +272,7 @@ def process_trends():
                 logging.warning("Failed to send daily report, but data collection completed")
 
         if high_rising_trends:
-            batch_size = 10
+            batch_size = MONITOR_CONFIG['alert_batch_size']
             total_batches = (len(high_rising_trends) + batch_size - 1) // batch_size
             for index in range(0, len(high_rising_trends), batch_size):
                 batch_number = index // batch_size + 1
