@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "TrendsSpy Browser Runner",
+  "version": "0.2.0",
+  "description": "支持 API、页面翻页、混合回退三种模式采集 Google Trends related queries，遇到验证码暂停后手动验证继续。",
+  "permissions": ["storage", "tabs", "downloads", "alarms", "permissions"],
+  "host_permissions": [
+    "https://trends.google.com/*",
+    "https://www.google.com/*",
+    "https://api.openai.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://trends.google.com/*",
+        "https://www.google.com/*"
+      ],
+      "js": ["contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "TrendsSpy Browser Runner",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TrendsSpy Browser Runner</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>TrendsSpy 浏览器采集</h1>
+        <p>支持 API、页面翻页、混合回退三种模式；遇到验证时会暂停等待人工处理。</p>
+      </header>
+
+      <section class="panel">
+        <label class="field">
+          <span>关键词列表</span>
+          <textarea id="keywords" rows="8" placeholder="一行一个关键词，例如：&#10;Image&#10;Video&#10;Music"></textarea>
+        </label>
+
+        <label class="field">
+          <span>抓取模式</span>
+          <select id="fetchMode">
+            <option value="api">API 模式</option>
+            <option value="page">页面模式（打开 Trends 页面自动翻页）</option>
+            <option value="hybrid">混合模式（API 限流后切到页面模式）</option>
+          </select>
+          <small class="field-help">API 模式默认不打开新标签页；页面模式会打开并复用 Google Trends 页面；混合模式先走 API，触发限流后当前及后续关键词切到页面翻页采集。</small>
+        </label>
+
+        <div class="grid">
+          <label class="field">
+            <span>时间范围</span>
+            <select id="timeframePreset"></select>
+            <input id="timeframeCustom" type="text" value="today 12-m" placeholder="例如 today 12-m / now 1-H / all / 2025-03-09 2026-03-09" />
+            <small class="field-help">已对齐 Google Trends 常见选项。没有合适的再手填，例如：today 12-m、now 1-H、today 5-y、all、2025-03-09 2026-03-09。</small>
+          </label>
+          <label class="field">
+            <span>地区</span>
+            <select id="geoPreset"></select>
+            <input id="geoCustom" type="text" value="" placeholder="例如留空=全球、CN、US、JP" />
+            <small class="field-help">可下拉选择常用地区；没有合适的再手填。留空表示全球，常见值：CN、US、JP、GB。</small>
+          </label>
+        </div>
+
+        <div class="grid">
+          <label class="field">
+            <span>最小间隔（秒）</span>
+            <input id="minDelay" type="number" min="1" value="12" />
+          </label>
+          <label class="field">
+            <span>最大间隔（秒）</span>
+            <input id="maxDelay" type="number" min="1" value="20" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="panel-title">抓取模式</div>
+        <div class="status-row"><strong>配置模式：</strong><span id="paramFetchModeText">-</span></div>
+        <div class="status-row"><strong>当前执行：</strong><span id="paramActiveModeText">-</span></div>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="panel-title">抓取参数</div>
+        <div class="status-row"><strong>时间范围：</strong><span id="paramTimeframeText">-</span></div>
+        <div class="status-row"><strong>地区：</strong><span id="paramGeoText">-</span></div>
+        <div class="status-row"><strong>类别：</strong><span id="paramCategoryText">全部（category=0）</span></div>
+        <div class="status-row"><strong>搜索类型：</strong><span id="paramPropertyText">网页搜索（property=空）</span></div>
+        <div class="status-row"><strong>语言：</strong><span id="paramLanguageText">en</span></div>
+        <div class="status-row"><strong>时区参数：</strong><span id="paramTimezoneText">-</span></div>
+      </section>
+
+      <section class="panel actions">
+        <button id="startBtn" class="primary">开始</button>
+        <button id="pauseBtn">暂停</button>
+        <button id="resumeBtn">继续</button>
+        <button id="captchaBtn">验证后继续</button>
+        <button id="exportBtn">导出 CSV</button>
+        <button id="endRunBtn">结束本轮</button>
+        <button id="clearBtn" class="danger">清空</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">AI 辅助定位</div>
+        <label class="checkbox-field">
+          <input id="aiLocatorEnabled" type="checkbox" />
+          <span>启用 AI 严格定位“相关查询”卡片</span>
+        </label>
+        <label class="field">
+          <span>OpenAI API Key</span>
+          <input id="openAIApiKey" type="password" placeholder="sk-..." />
+        </label>
+        <label class="field">
+          <span>Base URL</span>
+          <input id="openAIBaseUrl" type="text" value="https://api.openai.com/v1" placeholder="例如 https://api.openai.com/v1" />
+        </label>
+        <label class="field">
+          <span>模型</span>
+          <input id="openAIModel" type="text" value="gpt-4o-mini" />
+        </label>
+        <p class="message">只用于页面模式下的卡片定位。开启后，AI 必须明确选中“相关查询”卡片，否则当前关键词直接失败，不再回退规则抓取。</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">导出设置</div>
+        <label class="checkbox-field">
+          <input id="autoDownloadCsv" type="checkbox" />
+          <span>采集完成后自动下载 CSV</span>
+        </label>
+        <p class="message">默认是手动点击“导出 CSV”；开启后，任务完成且有成功结果时会自动下载。</p>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="status-row"><strong>状态：</strong><span id="statusText">空闲</span></div>
+        <div class="status-row"><strong>当前阶段：</strong><span id="stageText">准备开始</span></div>
+        <div class="status-row"><strong>进度：</strong><span id="progressText">0 / 0</span></div>
+        <div class="status-row"><strong>当前关键词：</strong><span id="currentKeywordText">-</span></div>
+        <div class="status-row"><strong>已采集条数：</strong><span id="resultCountText">0</span></div>
+        <div class="status-row"><strong>错误数：</strong><span id="errorCountText">0</span></div>
+        <div class="status-row"><strong>最后错误：</strong><span id="lastErrorText">-</span></div>
+        <p id="messageText" class="message">等待开始。</p>
+      </section>
+
+      <section class="panel list-panel">
+        <h2>最近结果</h2>
+        <ul id="resultList" class="result-list"></ul>
+      </section>
+
+      <section class="panel list-panel">
+        <h2>最近错误</h2>
+        <ul id="errorList" class="result-list error-list"></ul>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

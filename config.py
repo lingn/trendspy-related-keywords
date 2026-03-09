@@ -126,6 +126,12 @@ RATE_LIMIT_CONFIG = {
     'max_delay_between_queries': 20,  # 最大延迟20秒
     'batch_size': 5,  # 每批处理的关键词数量
     'batch_interval': 300,  # 批次间隔时间（秒）
+    'query_request_delay': float(os.getenv('TRENDS_QUERY_REQUEST_DELAY', '6')),  # 单次请求最小间隔
+    'cooldown_base_seconds': int(os.getenv('TRENDS_RATE_LIMIT_COOLDOWN_BASE', '180')),  # 429后基础冷却时间
+    'cooldown_max_seconds': int(os.getenv('TRENDS_RATE_LIMIT_COOLDOWN_MAX', '3600')),  # 429后最大冷却时间
+    'max_consecutive_rate_limits': int(os.getenv('TRENDS_MAX_CONSECUTIVE_RATE_LIMITS', '3')),  # 连续429达到后提前终止本轮任务
+    'max_requests_per_minute': int(os.getenv('TRENDS_MAX_REQUESTS_PER_MINUTE', '12')),
+    'max_requests_per_hour': int(os.getenv('TRENDS_MAX_REQUESTS_PER_HOUR', '80')),
 }
 
 # Schedule Configuration

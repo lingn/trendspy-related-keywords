@@ -21,7 +21,7 @@ from config import (
     TRENDS_CONFIG,
 )
 from notification import NotificationManager
-from querytrends import batch_get_queries, save_related_queries
+from querytrends import RateLimitBlockedError, batch_get_queries, save_related_queries
 
 REPORT_COLUMNS = {
     'keyword': '关键词',
@@ -165,6 +165,62 @@ def build_rising_alert_email(batch_trends, batch_number, total_batches, actual_t
     return body
 
 
+def send_collected_notifications(all_results, high_rising_trends, directory, actual_timeframe, interrupted_reason=None):
+    """发送当前已收集到的报告与提醒；即使任务中途终止也会发送。"""
+    report_file = generate_daily_report(all_results, directory)
+    if report_file:
+        report_body = build_daily_report_email(
+            actual_timeframe,
+            success_count=len(all_results),
+            total_count=len(KEYWORDS),
+        )
+        if interrupted_reason:
+            report_body += f"""
+            <h3>任务状态</h3>
+            <p>本轮任务未完整执行，已提前结束。</p>
+            <p><strong>原因：</strong>{interrupted_reason}</p>
+            <p>附件仅包含已成功采集到的数据。</p>
+            """
+
+        if not notification_manager.send_notification(
+            subject=f"Google Trends 每日报告 - {datetime.now().strftime('%Y-%m-%d')}",
+            body=report_body,
+            attachments=[report_file],
+        ):
+            logging.warning("Failed to send daily report, but data collection completed")
+    elif interrupted_reason:
+        notification_manager.send_notification(
+            subject=f"Google Trends 任务中断 - {datetime.now().strftime('%Y-%m-%d')}",
+            body=(
+                "<p>本轮任务在没有生成报表前已提前结束。</p>"
+                f"<p><strong>原因：</strong>{interrupted_reason}</p>"
+            ),
+        )
+
+    if high_rising_trends:
+        batch_size = MONITOR_CONFIG['alert_batch_size']
+        total_batches = (len(high_rising_trends) + batch_size - 1) // batch_size
+        for index in range(0, len(high_rising_trends), batch_size):
+            batch_number = index // batch_size + 1
+            batch_trends = high_rising_trends[index:index + batch_size]
+            alert_body = build_rising_alert_email(
+                batch_trends,
+                batch_number,
+                total_batches,
+                actual_timeframe,
+            )
+            if interrupted_reason:
+                alert_body += f"<p><i>说明：本轮任务已提前结束，以上提醒基于已成功采集的数据。</i></p>"
+            if not notification_manager.send_notification(
+                subject=f"Google Trends 高增长提醒（{batch_number}/{total_batches}）",
+                body=alert_body,
+            ):
+                logging.warning(
+                    f"Failed to send alert notification for batch {batch_number}, but data collection completed"
+                )
+            time.sleep(2)
+
+
 def get_date_range_timeframe(timeframe):
     """将 last-x-d 转换为日期范围格式"""
     if not timeframe.startswith('last-'):
@@ -200,6 +256,8 @@ def process_keywords_batch(keywords_batch, directory, all_results, high_rising_t
             all_results[keyword] = data
 
         return True
+    except RateLimitBlockedError:
+        raise
     except Exception as e:
         logging.error(f"Error processing batch: {e}")
         return False
@@ -210,6 +268,7 @@ def process_keywords_batch(keywords_batch, directory, all_results, high_rising_t
     Exception,
     max_tries=RATE_LIMIT_CONFIG['max_retries'],
     jitter=backoff.full_jitter,
+    giveup=lambda error: isinstance(error, RateLimitBlockedError),
 )
 def get_trends_with_retry(keywords_batch, timeframe):
     """使用重试机制获取趋势数据"""
@@ -257,43 +316,25 @@ def process_trends():
                 logging.info(f"Waiting {wait_time:.1f} seconds before processing next batch...")
                 time.sleep(wait_time)
 
-        report_file = generate_daily_report(all_results, directory)
-        if report_file:
-            report_body = build_daily_report_email(
-                actual_timeframe,
-                success_count=len(all_results),
-                total_count=len(KEYWORDS),
-            )
-            if not notification_manager.send_notification(
-                subject=f"Google Trends 每日报告 - {datetime.now().strftime('%Y-%m-%d')}",
-                body=report_body,
-                attachments=[report_file],
-            ):
-                logging.warning("Failed to send daily report, but data collection completed")
-
-        if high_rising_trends:
-            batch_size = MONITOR_CONFIG['alert_batch_size']
-            total_batches = (len(high_rising_trends) + batch_size - 1) // batch_size
-            for index in range(0, len(high_rising_trends), batch_size):
-                batch_number = index // batch_size + 1
-                batch_trends = high_rising_trends[index:index + batch_size]
-                alert_body = build_rising_alert_email(
-                    batch_trends,
-                    batch_number,
-                    total_batches,
-                    actual_timeframe,
-                )
-                if not notification_manager.send_notification(
-                    subject=f"Google Trends 高增长提醒（{batch_number}/{total_batches}）",
-                    body=alert_body,
-                ):
-                    logging.warning(
-                        f"Failed to send alert notification for batch {batch_number}, but data collection completed"
-                    )
-                time.sleep(2)
+        send_collected_notifications(
+            all_results,
+            high_rising_trends,
+            directory,
+            actual_timeframe,
+        )
 
         logging.info("Daily trends processing completed successfully")
         return True
+    except RateLimitBlockedError as e:
+        logging.error(f"Google Trends 持续限流，本轮任务已提前终止：{e}")
+        send_collected_notifications(
+            all_results,
+            high_rising_trends,
+            directory,
+            actual_timeframe,
+            interrupted_reason=str(e),
+        )
+        return False
     except Exception as e:
         logging.error(f"Error in trends processing: {e}")
         notification_manager.send_notification(

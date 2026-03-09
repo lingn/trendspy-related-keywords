@@ -53,6 +53,7 @@ python trends_monitor.py --test --keywords "Python" "AI"
 ## 文档索引
 
 - 架构说明：`docs/ARCHITECTURE.md`
+- Chrome 插件方案：`docs/CHROME_EXTENSION.md`
 
 ## 项目结构
 
@@ -74,6 +75,27 @@ python trends_monitor.py --test --keywords "Python" "AI"
 - `trends_monitor.py`
 - `querytrends.py`
 - `notification.py`
+
+
+## Chrome 插件 MVP
+
+如果你希望走“真实浏览器会话 + 遇验证码人工处理 + 验证后继续”的方案，
+仓库里已经新增了一个 Chrome 扩展 MVP：`chrome-extension/`。
+
+它的特点是：
+
+- 在浏览器当前会话里请求 Google Trends 数据
+- 支持批量关键词队列
+- 支持 `API / 页面 / 混合` 三种采集模式
+- 支持遇到验证码暂停，手动验证后继续
+- `API 模式` 默认点击“开始”不会打开新标签页
+- `页面模式` 会打开真实 Trends 页面并自动翻页采集
+- `混合模式` 会在 API 限流后自动切到页面模式
+- 插件弹窗会显示状态、当前阶段、当前关键词、进度和最近结果
+- 支持手动导出 CSV，也支持可选的自动下载 CSV
+- 支持导出中文 CSV
+
+详细说明见：`docs/CHROME_EXTENSION.md`
 
 ## 安装说明
 
