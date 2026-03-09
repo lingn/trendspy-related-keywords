@@ -8,10 +8,6 @@
   </head>
   <body>
     <main class="app">
-      <header class="header">
-        <h1>TrendsSpy 浏览器采集</h1>
-        <p>支持 API、页面翻页、混合回退三种模式；遇到验证时会暂停等待人工处理。</p>
-      </header>
 
       <section class="panel">
         <label class="field">
@@ -86,7 +82,7 @@
         <div class="panel-title">AI 辅助定位</div>
         <label class="checkbox-field">
           <input id="aiLocatorEnabled" type="checkbox" />
-          <span>启用 AI 严格定位“相关查询”卡片</span>
+          <span>启用 AI 严格定位"相关查询"卡片</span>
         </label>
         <label class="field">
           <span>OpenAI API Key</span>
@@ -100,7 +96,11 @@
           <span>模型</span>
           <input id="openAIModel" type="text" value="gpt-4o-mini" />
         </label>
-        <p class="message">只用于页面模式下的卡片定位。开启后，AI 必须明确选中“相关查询”卡片，否则当前关键词直接失败，不再回退规则抓取。</p>
+        <div class="ai-test-row">
+          <button id="testAiBtn">测试连接</button>
+          <span id="testAiResult" class="test-result"></span>
+        </div>
+        <p class="message">只用于页面模式下的卡片定位。开启后，AI 必须明确选中"相关查询"卡片，否则当前关键词直接失败，不再回退规则抓取。</p>
       </section>
 
       <section class="panel">
@@ -109,7 +109,7 @@
           <input id="autoDownloadCsv" type="checkbox" />
           <span>采集完成后自动下载 CSV</span>
         </label>
-        <p class="message">默认是手动点击“导出 CSV”；开启后，任务完成且有成功结果时会自动下载。</p>
+        <p class="message">默认是手动点击"导出 CSV"；开启后，任务完成且有成功结果时会自动下载。</p>
       </section>
 
       <section class="panel status-panel">

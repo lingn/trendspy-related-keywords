@@ -5,7 +5,7 @@
 
 body {
   margin: 0;
-  width: 440px;
+  width: 100%;
   background: #f6f8fb;
   color: #1f2937;
 }
@@ -173,3 +173,25 @@ button.danger {
   background: #fef2f2;
   color: #991b1b;
 }
+
+.ai-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ai-test-row button {
+  flex-shrink: 0;
+}
+
+.test-result {
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+  color: #4b5563;
+}
+
+.test-result.success { color: #16a34a; }
+.test-result.error   { color: #b91c1c; }
+.test-result.loading { color: #2563eb; }

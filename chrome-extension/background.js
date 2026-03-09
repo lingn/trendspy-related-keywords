@@ -280,23 +280,20 @@ function buildResponsesUrl(baseUrl) {
   return `${normalized}/responses`;
 }
 
+function buildOriginPattern(urlString) {
+  const url = new URL(urlString);
+  return `${url.protocol}//${url.host}/*`;
+}
+
 async function ensureHostPermissionForUrl(urlString) {
   const url = new URL(urlString);
-  const originPattern = `${url.protocol}//${url.host}/*`;
+  const originPattern = buildOriginPattern(urlString);
   const alreadyGranted = await chrome.permissions.contains({
     origins: [originPattern],
   });
 
-  if (alreadyGranted) {
-    return originPattern;
-  }
-
-  const granted = await chrome.permissions.request({
-    origins: [originPattern],
-  });
-
-  if (!granted) {
-    throw new Error(`未授予 ${url.origin} 的网络访问权限，无法请求自定义 AI Base URL`);
+  if (!alreadyGranted) {
+    throw new Error(`未授予 ${url.origin} 的网络访问权限，请在面板中点击“测试连接”时授权该域名。`);
   }
 
   return originPattern;
@@ -431,6 +428,107 @@ async function locateWidgetWithOpenAI(payload) {
   return {
     ok: true,
     widgetIndex: Number.isInteger(parsed.widgetIndex) ? parsed.widgetIndex : -1,
+    confidence: Number(parsed.confidence) || 0,
+    reason: String(parsed.reason || ''),
+    model,
+  };
+}
+
+async function chooseViewOptionWithOpenAI(payload) {
+  const settings = await getSettings();
+  if (!settings.aiLocatorEnabled) {
+    return {
+      ok: false,
+      message: 'AI 辅助定位未开启',
+    };
+  }
+
+  const apiKey = String(settings.openAIApiKey || '').trim();
+  if (!apiKey) {
+    return {
+      ok: false,
+      message: 'AI 辅助定位已开启，但未填写 OpenAI API Key',
+    };
+  }
+
+  const baseUrl = normalizeOpenAIBaseUrl(settings.openAIBaseUrl);
+  const model = String(settings.openAIModel || DEFAULT_SETTINGS.openAIModel).trim() || DEFAULT_SETTINGS.openAIModel;
+  const responsesUrl = buildResponsesUrl(baseUrl);
+  await ensureHostPermissionForUrl(responsesUrl);
+
+  const targetViewLabel = payload.targetView === 'top' ? '热门 / Top' : '搜索量上升 / Rising';
+  const prompt = [
+    '你是 Google Trends 页面操作助手。',
+    `任务：从当前打开的下拉选项里，选出最符合目标视图“${targetViewLabel}”的那一个。`,
+    '要求：只返回 JSON，不要解释。',
+    'JSON 结构：{"optionIndex": number, "confidence": number, "reason": string}',
+    '规则：',
+    '1. 只在给定 options 中选择。',
+    '2. 如果目标是热门，优先选择 Top / 热门。',
+    '3. 如果目标是上升，优先选择 Rising / 搜索量上升 / 上升。',
+    '4. 如果没有可靠选项，返回 {"optionIndex": -1, "confidence": 0, "reason": "..."}。',
+    '',
+    `页面上下文：${JSON.stringify(payload.pageContext || {})}`,
+    `下拉选项：${JSON.stringify(payload.options || [])}`,
+  ].join('\n');
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  let response;
+  let data;
+
+  try {
+    response = await fetch(responsesUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        input: prompt,
+        text: {
+          format: {
+            type: 'json_object',
+          },
+        },
+      }),
+      signal: controller.signal,
+    });
+    data = await response.json();
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('AI 视图切换请求超时（20 秒），已停止等待');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    const apiMessage = data?.error?.message || `OpenAI 请求失败：HTTP ${response.status}`;
+    throw new Error(apiMessage);
+  }
+
+  const rawText =
+    data.output_text ||
+    data.output?.[0]?.content?.find((item) => item.type === 'output_text')?.text ||
+    '';
+
+  if (!rawText) {
+    throw new Error('OpenAI 没有返回可解析的视图切换结果');
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (error) {
+    throw new Error(`OpenAI 返回的 JSON 无法解析：${formatError(error)}`);
+  }
+
+  return {
+    ok: true,
+    optionIndex: Number.isInteger(parsed.optionIndex) ? parsed.optionIndex : -1,
     confidence: Number(parsed.confidence) || 0,
     reason: String(parsed.reason || ''),
     model,
@@ -980,6 +1078,42 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// 点击插件图标 → 在当前 tab 注入/切换抽屉
+chrome.action.onClicked.addListener((tab) => {
+  const url = tab.url || '';
+  const isSystemPage = !url || /^(chrome|edge|about|data):/.test(url);
+
+  if (isSystemPage) {
+    // 系统页无法注入，改为打开 Google Trends 并注入
+    chrome.tabs.create({ url: 'https://trends.google.com' }, (newTab) => {
+      const inject = () => {
+        chrome.scripting.executeScript({
+          target: { tabId: newTab.id },
+          files: ['drawer.js'],
+        }).catch((err) => {
+          console.error('[TrendsSpy] inject failed:', err?.message || err);
+        });
+      };
+      // 等页面加载完成再注入
+      const onUpdated = (tabId, info) => {
+        if (tabId === newTab.id && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(onUpdated);
+          inject();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    });
+    return;
+  }
+
+  chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ['drawer.js'],
+  }).catch((err) => {
+    console.error('[TrendsSpy] inject failed:', err?.message || err);
+  });
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   (async () => {
     const state = await getState();
@@ -998,6 +1132,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    try {
     if (message.type === 'getState') {
       sendResponse({ ok: true, state: await getState(), settings: await getSettings() });
       return;
@@ -1128,6 +1263,64 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return;
     }
 
+    if (message.type === 'aiChooseViewOption') {
+      sendResponse(await chooseViewOptionWithOpenAI(message.payload || {}));
+      return;
+    }
+
+    if (message.type === 'testAiConnection') {
+      try {
+        const settings = await getSettings();
+        const apiKey = String(settings.openAIApiKey || '').trim();
+        if (!apiKey) {
+          sendResponse({ ok: false, message: 'API Key \u672a\u586b\u5199' });
+          return;
+        }
+        const baseUrl = normalizeOpenAIBaseUrl(settings.openAIBaseUrl);
+        const model = String(settings.openAIModel || DEFAULT_SETTINGS.openAIModel).trim() || DEFAULT_SETTINGS.openAIModel;
+        const responsesUrl = buildResponsesUrl(baseUrl);
+        await ensureHostPermissionForUrl(responsesUrl);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        let response, data;
+        try {
+          response = await fetch(responsesUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              input: 'Reply with "ok" only.',
+              text: { format: { type: 'text' } },
+            }),
+            signal: controller.signal,
+          });
+          data = await response.json();
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (!response.ok) {
+          const msg = data?.error?.message || `HTTP ${response.status}`;
+          sendResponse({ ok: false, message: `\u8bf7\u6c42\u5931\u8d25\uff1a${msg}` });
+          return;
+        }
+
+        const text =
+          data.output_text ||
+          data.output?.[0]?.content?.find((item) => item.type === 'output_text')?.text ||
+          '(no output)';
+        sendResponse({ ok: true, message: `\u8fde\u63a5\u6210\u529f\uff0c\u6a21\u578b\u56de\u590d\uff1a${text.slice(0, 80)}` });
+      } catch (error) {
+        const msg = error?.name === 'AbortError' ? '\u8bf7\u6c42\u8d85\u65f6\uff0815 \u79d2\uff09' : formatError(error);
+        sendResponse({ ok: false, message: msg });
+      }
+      return;
+    }
+
     if (message.type === 'exportResults') {
       await exportResults();
       sendResponse({ ok: true });
@@ -1135,6 +1328,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     sendResponse({ ok: false, error: 'unknown_message' });
+    } catch (error) {
+      sendResponse({ ok: false, message: formatError(error) });
+    }
   })();
 
   return true;

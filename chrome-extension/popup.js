@@ -35,49 +35,158 @@ const FETCH_MODE_LABELS = {
   hybrid: '混合模式',
 };
 
-const elements = {
-  keywords: document.getElementById('keywords'),
-  fetchMode: document.getElementById('fetchMode'),
-  timeframePreset: document.getElementById('timeframePreset'),
-  timeframeCustom: document.getElementById('timeframeCustom'),
-  geoPreset: document.getElementById('geoPreset'),
-  geoCustom: document.getElementById('geoCustom'),
-  minDelay: document.getElementById('minDelay'),
-  maxDelay: document.getElementById('maxDelay'),
-  startBtn: document.getElementById('startBtn'),
-  pauseBtn: document.getElementById('pauseBtn'),
-  resumeBtn: document.getElementById('resumeBtn'),
-  captchaBtn: document.getElementById('captchaBtn'),
-  exportBtn: document.getElementById('exportBtn'),
-  endRunBtn: document.getElementById('endRunBtn'),
-  clearBtn: document.getElementById('clearBtn'),
-  autoDownloadCsv: document.getElementById('autoDownloadCsv'),
-  aiLocatorEnabled: document.getElementById('aiLocatorEnabled'),
-  openAIApiKey: document.getElementById('openAIApiKey'),
-  openAIBaseUrl: document.getElementById('openAIBaseUrl'),
-  openAIModel: document.getElementById('openAIModel'),
-  statusText: document.getElementById('statusText'),
-  stageText: document.getElementById('stageText'),
-  progressText: document.getElementById('progressText'),
-  currentKeywordText: document.getElementById('currentKeywordText'),
-  resultCountText: document.getElementById('resultCountText'),
-  errorCountText: document.getElementById('errorCountText'),
-  lastErrorText: document.getElementById('lastErrorText'),
-  messageText: document.getElementById('messageText'),
-  paramFetchModeText: document.getElementById('paramFetchModeText'),
-  paramActiveModeText: document.getElementById('paramActiveModeText'),
-  paramTimeframeText: document.getElementById('paramTimeframeText'),
-  paramGeoText: document.getElementById('paramGeoText'),
-  paramCategoryText: document.getElementById('paramCategoryText'),
-  paramPropertyText: document.getElementById('paramPropertyText'),
-  paramLanguageText: document.getElementById('paramLanguageText'),
-  paramTimezoneText: document.getElementById('paramTimezoneText'),
-  resultList: document.getElementById('resultList'),
-  errorList: document.getElementById('errorList'),
-};
+let elements = null;
+let popupInitialized = false;
+
+function initElements() {
+  const nextElements = {
+    keywords: document.getElementById('keywords'),
+    fetchMode: document.getElementById('fetchMode'),
+    timeframePreset: document.getElementById('timeframePreset'),
+    timeframeCustom: document.getElementById('timeframeCustom'),
+    geoPreset: document.getElementById('geoPreset'),
+    geoCustom: document.getElementById('geoCustom'),
+    minDelay: document.getElementById('minDelay'),
+    maxDelay: document.getElementById('maxDelay'),
+    startBtn: document.getElementById('startBtn'),
+    pauseBtn: document.getElementById('pauseBtn'),
+    resumeBtn: document.getElementById('resumeBtn'),
+    captchaBtn: document.getElementById('captchaBtn'),
+    exportBtn: document.getElementById('exportBtn'),
+    endRunBtn: document.getElementById('endRunBtn'),
+    clearBtn: document.getElementById('clearBtn'),
+    autoDownloadCsv: document.getElementById('autoDownloadCsv'),
+    aiLocatorEnabled: document.getElementById('aiLocatorEnabled'),
+    openAIApiKey: document.getElementById('openAIApiKey'),
+    openAIBaseUrl: document.getElementById('openAIBaseUrl'),
+    openAIModel: document.getElementById('openAIModel'),
+    statusText: document.getElementById('statusText'),
+    stageText: document.getElementById('stageText'),
+    progressText: document.getElementById('progressText'),
+    currentKeywordText: document.getElementById('currentKeywordText'),
+    resultCountText: document.getElementById('resultCountText'),
+    errorCountText: document.getElementById('errorCountText'),
+    lastErrorText: document.getElementById('lastErrorText'),
+    messageText: document.getElementById('messageText'),
+    paramFetchModeText: document.getElementById('paramFetchModeText'),
+    paramActiveModeText: document.getElementById('paramActiveModeText'),
+    paramTimeframeText: document.getElementById('paramTimeframeText'),
+    paramGeoText: document.getElementById('paramGeoText'),
+    paramCategoryText: document.getElementById('paramCategoryText'),
+    paramPropertyText: document.getElementById('paramPropertyText'),
+    paramLanguageText: document.getElementById('paramLanguageText'),
+    paramTimezoneText: document.getElementById('paramTimezoneText'),
+    resultList: document.getElementById('resultList'),
+    errorList: document.getElementById('errorList'),
+    testAiBtn: document.getElementById('testAiBtn'),
+    testAiResult: document.getElementById('testAiResult'),
+  };
+
+  const missingKeys = Object.entries(nextElements)
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+
+  if (missingKeys.length) {
+    console.error('[TrendsSpy] popup.html 缺少必要节点:', missingKeys.join(', '));
+  }
+
+  elements = nextElements;
+  return nextElements;
+}
+
+function reportUiError(error) {
+  const message = error?.message || String(error || '');
+  if (elements?.messageText) {
+    elements.messageText.textContent = isExtensionContextInvalidated(error)
+      ? '扩展刚刚被重新加载，请刷新当前网页后重新打开 TrendsSpy 面板。'
+      : message;
+  }
+}
+
+function addListener(target, eventName, handler, options) {
+  if (!target) {
+    return false;
+  }
+  target.addEventListener(
+    eventName,
+    (event) => {
+      try {
+        const result = handler(event);
+        if (result && typeof result.then === 'function') {
+          result.catch((error) => {
+            reportUiError(error);
+          });
+        }
+      } catch (error) {
+        reportUiError(error);
+      }
+    },
+    options
+  );
+  return true;
+}
+
+function isExtensionContextInvalidated(error) {
+  const message = error?.message || String(error || '');
+  return message.includes('Extension context invalidated');
+}
+
+function normalizeBaseUrlForPermission(baseUrl) {
+  const trimmed = String(baseUrl || '').trim().replace(/\/+$/, '');
+  return trimmed || 'https://api.openai.com/v1';
+}
+
+function isBuiltInAiOrigin(url) {
+  return url.origin === 'https://api.openai.com';
+}
+
+async function ensureAiHostPermissionFromGesture() {
+  const baseUrl = normalizeBaseUrlForPermission(elements?.openAIBaseUrl?.value);
+  const targetUrl = baseUrl.endsWith('/responses') ? baseUrl : `${baseUrl}/responses`;
+  let url;
+
+  try {
+    url = new URL(targetUrl);
+  } catch (_) {
+    throw new Error('Base URL 格式无效，请输入正确的 http/https 地址');
+  }
+
+  if (isBuiltInAiOrigin(url)) {
+    return true;
+  }
+
+  const originPattern = `${url.protocol}//${url.host}/*`;
+  const granted = await chrome.permissions.request({
+    origins: [originPattern],
+  });
+
+  if (!granted) {
+    throw new Error(`未授予 ${url.origin} 的网络访问权限，无法测试该 AI Base URL`);
+  }
+
+  return true;
+}
 
 function sendMessage(message) {
-  return chrome.runtime.sendMessage(message);
+  try {
+    return Promise.resolve(chrome.runtime.sendMessage(message)).catch((err) => {
+      const msg = err?.message || String(err);
+      if (elements?.messageText) {
+        elements.messageText.textContent = isExtensionContextInvalidated(err)
+          ? '扩展刚刚被重新加载，请刷新当前网页后重新打开 TrendsSpy 面板。'
+          : '[通信错误] ' + msg;
+      }
+      throw err;
+    });
+  } catch (err) {
+    const msg = err?.message || String(err);
+    if (elements?.messageText) {
+      elements.messageText.textContent = isExtensionContextInvalidated(err)
+        ? '扩展刚刚被重新加载，请刷新当前网页后重新打开 TrendsSpy 面板。'
+        : '[通信错误] ' + msg;
+    }
+    return Promise.reject(err);
+  }
 }
 
 function formatStatus(state) {
@@ -330,66 +439,81 @@ function handlePresetChange(selectElement, inputElement) {
 }
 
 async function startRun() {
-  const keywords = elements.keywords.value
-    .split(/\n+/)
-    .map((keyword) => keyword.trim())
-    .filter(Boolean);
-  const timeframe = getResolvedFieldValue(elements.timeframePreset, elements.timeframeCustom);
-  const geo = getResolvedFieldValue(elements.geoPreset, elements.geoCustom);
-  const fetchMode = elements.fetchMode.value || 'api';
+  try {
+    const keywords = elements.keywords.value
+      .split(/\n+/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean);
+    const timeframe = getResolvedFieldValue(elements.timeframePreset, elements.timeframeCustom);
+    const geo = getResolvedFieldValue(elements.geoPreset, elements.geoCustom);
+    const fetchMode = elements.fetchMode.value || 'api';
 
-  if (!keywords.length) {
-    elements.messageText.textContent = '请先输入至少一个关键词。';
-    return;
+    if (!keywords.length) {
+      elements.messageText.textContent = '请先输入至少一个关键词。';
+      return;
+    }
+
+    if (!timeframe) {
+      elements.messageText.textContent = '请先选择或输入时间范围。';
+      return;
+    }
+
+    const response = await sendMessage({
+      type: 'startRun',
+      payload: {
+        keywords,
+        fetchMode,
+        timeframe,
+        geo,
+        minDelaySeconds: Number(elements.minDelay.value),
+        maxDelaySeconds: Number(elements.maxDelay.value),
+      },
+    });
+    renderState(response.state);
+
+    if (fetchMode === 'api') {
+      elements.messageText.textContent = '任务已启动。API 模式默认不打开新标签页。';
+      return;
+    }
+
+    if (fetchMode === 'page') {
+      elements.messageText.textContent = '任务已启动。页面模式会打开并复用 Trends 页面标签页。';
+      return;
+    }
+
+    elements.messageText.textContent = '任务已启动。混合模式会先走 API，限流后自动切到页面模式。';
+  } catch (error) {
+    reportUiError(error);
   }
-
-  if (!timeframe) {
-    elements.messageText.textContent = '请先选择或输入时间范围。';
-    return;
-  }
-
-  const response = await sendMessage({
-    type: 'startRun',
-    payload: {
-      keywords,
-      fetchMode,
-      timeframe,
-      geo,
-      minDelaySeconds: Number(elements.minDelay.value),
-      maxDelaySeconds: Number(elements.maxDelay.value),
-    },
-  });
-  renderState(response.state);
-
-  if (fetchMode === 'api') {
-    elements.messageText.textContent = '任务已启动。API 模式默认不打开新标签页。';
-    return;
-  }
-
-  if (fetchMode === 'page') {
-    elements.messageText.textContent = '任务已启动。页面模式会打开并复用 Trends 页面标签页。';
-    return;
-  }
-
-  elements.messageText.textContent = '任务已启动。混合模式会先走 API，限流后自动切到页面模式。';
 }
-
 async function pauseRun() {
-  const response = await sendMessage({ type: 'pauseRun' });
-  renderState(response.state);
-  elements.messageText.textContent = '任务已暂停。';
+  try {
+    const response = await sendMessage({ type: 'pauseRun' });
+    renderState(response.state);
+    elements.messageText.textContent = '任务已暂停。';
+  } catch (error) {
+    reportUiError(error);
+  }
 }
 
 async function resumeRun() {
-  const response = await sendMessage({ type: 'resumeRun' });
-  renderState(response.state);
-  elements.messageText.textContent = '任务恢复中。';
+  try {
+    const response = await sendMessage({ type: 'resumeRun' });
+    renderState(response.state);
+    elements.messageText.textContent = '任务恢复中。';
+  } catch (error) {
+    reportUiError(error);
+  }
 }
 
 async function continueAfterCaptcha() {
-  const response = await sendMessage({ type: 'continueAfterCaptcha' });
-  renderState(response.state);
-  elements.messageText.textContent = '已收到继续指令，准备重试当前关键词。';
+  try {
+    const response = await sendMessage({ type: 'continueAfterCaptcha' });
+    renderState(response.state);
+    elements.messageText.textContent = '已收到继续指令，准备重试当前关键词。';
+  } catch (error) {
+    reportUiError(error);
+  }
 }
 
 async function exportResults() {
@@ -402,15 +526,23 @@ async function exportResults() {
 }
 
 async function clearResults() {
-  const response = await sendMessage({ type: 'clearResults' });
-  renderState(response.state);
-  elements.keywords.value = '';
-  renderCurrentParams();
+  try {
+    const response = await sendMessage({ type: 'clearResults' });
+    renderState(response.state);
+    elements.keywords.value = '';
+    renderCurrentParams();
+  } catch (error) {
+    reportUiError(error);
+  }
 }
 
 async function terminateRun() {
-  const response = await sendMessage({ type: 'terminateRun' });
-  renderState(response.state);
+  try {
+    const response = await sendMessage({ type: 'terminateRun' });
+    renderState(response.state);
+  } catch (error) {
+    reportUiError(error);
+  }
 }
 
 async function updateDownloadSettings() {
@@ -442,41 +574,76 @@ async function updateAiSettings() {
   }
 }
 
-elements.startBtn.addEventListener('click', startRun);
-elements.pauseBtn.addEventListener('click', pauseRun);
-elements.resumeBtn.addEventListener('click', resumeRun);
-elements.captchaBtn.addEventListener('click', continueAfterCaptcha);
-elements.exportBtn.addEventListener('click', exportResults);
-elements.endRunBtn.addEventListener('click', terminateRun);
-elements.clearBtn.addEventListener('click', clearResults);
-elements.fetchMode.addEventListener('change', renderCurrentParams);
-elements.timeframePreset.addEventListener('change', () => {
-  handlePresetChange(elements.timeframePreset, elements.timeframeCustom);
-});
-elements.geoPreset.addEventListener('change', () => {
-  handlePresetChange(elements.geoPreset, elements.geoCustom);
-});
-elements.timeframeCustom.addEventListener('input', renderCurrentParams);
-elements.geoCustom.addEventListener('input', renderCurrentParams);
-elements.autoDownloadCsv.addEventListener('change', updateDownloadSettings);
-elements.aiLocatorEnabled.addEventListener('change', updateAiSettings);
-elements.openAIApiKey.addEventListener('change', updateAiSettings);
-elements.openAIApiKey.addEventListener('blur', updateAiSettings);
-elements.openAIBaseUrl.addEventListener('change', updateAiSettings);
-elements.openAIBaseUrl.addEventListener('blur', updateAiSettings);
-elements.openAIModel.addEventListener('change', updateAiSettings);
-elements.openAIModel.addEventListener('blur', updateAiSettings);
+function bindEventListeners() {
+  addListener(elements.startBtn, 'click', startRun);
+  addListener(elements.pauseBtn, 'click', pauseRun);
+  addListener(elements.resumeBtn, 'click', resumeRun);
+  addListener(elements.captchaBtn, 'click', continueAfterCaptcha);
+  addListener(elements.exportBtn, 'click', exportResults);
+  addListener(elements.endRunBtn, 'click', terminateRun);
+  addListener(elements.clearBtn, 'click', clearResults);
+  addListener(elements.fetchMode, 'change', renderCurrentParams);
+  addListener(elements.timeframePreset, 'change', () => {
+    handlePresetChange(elements.timeframePreset, elements.timeframeCustom);
+  });
+  addListener(elements.geoPreset, 'change', () => {
+    handlePresetChange(elements.geoPreset, elements.geoCustom);
+  });
+  addListener(elements.timeframeCustom, 'input', renderCurrentParams);
+  addListener(elements.geoCustom, 'input', renderCurrentParams);
+  addListener(elements.autoDownloadCsv, 'change', updateDownloadSettings);
+  addListener(elements.aiLocatorEnabled, 'change', updateAiSettings);
+  addListener(elements.openAIApiKey, 'change', updateAiSettings);
+  addListener(elements.openAIApiKey, 'blur', updateAiSettings);
+  addListener(elements.openAIBaseUrl, 'change', updateAiSettings);
+  addListener(elements.openAIBaseUrl, 'blur', updateAiSettings);
+  addListener(elements.openAIModel, 'change', updateAiSettings);
+  addListener(elements.openAIModel, 'blur', updateAiSettings);
 
-document.addEventListener('DOMContentLoaded', () => {
   fillPresetOptions(elements.timeframePreset, TIMEFRAME_PRESETS);
   fillPresetOptions(elements.geoPreset, GEO_PRESETS);
   renderCurrentParams();
   refresh();
   ensureAutoRefresh();
-});
+
+  addListener(elements.testAiBtn, 'click', async () => {
+    const result = elements.testAiResult;
+    result.className = 'test-result loading';
+    result.textContent = '测试中…';
+    elements.testAiBtn.disabled = true;
+    try {
+      await ensureAiHostPermissionFromGesture();
+      await updateAiSettings();
+      const response = await sendMessage({ type: 'testAiConnection' });
+      result.className = `test-result ${response.ok ? 'success' : 'error'}`;
+      result.textContent = response.message || (response.ok ? '连接成功' : '连接失败');
+    } catch (error) {
+      result.className = 'test-result error';
+      result.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      elements.testAiBtn.disabled = false;
+    }
+  });
+}
+
+function initializePopup() {
+  if (popupInitialized) {
+    return;
+  }
+
+  initElements();
+  bindEventListeners();
+  popupInitialized = true;
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializePopup, { once: true });
+} else {
+  initializePopup();
+}
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local') {
+  if (areaName !== 'local' || !popupInitialized) {
     return;
   }
   if (changes[STATE_KEY]) {
@@ -485,6 +652,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 document.addEventListener('visibilitychange', () => {
+  if (!popupInitialized) {
+    return;
+  }
   if (document.hidden) {
     stopAutoRefresh();
   } else {
@@ -493,4 +663,8 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-window.addEventListener('beforeunload', stopAutoRefresh);
+window.addEventListener('beforeunload', () => {
+  if (popupInitialized) {
+    stopAutoRefresh();
+  }
+});
